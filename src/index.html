@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hana's Multi-File Transfer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f0f4f8;
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+        }
+        #statusMessage {
+            text-align: center;
+            margin-bottom: 20px;
+            font-weight: bold;
+        }
+        #fileInput {
+            display: none;
+        }
+        #selectFilesButton {
+            display: inline-block;
+            padding: 10px 20px;
+            background-color: #3498db;
+            color: white;
+            cursor: pointer;
+            border-radius: 5px;
+            transition: background-color 0.3s;
+        }
+        #selectFilesButton:hover {
+            background-color: #2980b9;
+        }
+        #uploadStatusContainer {
+            margin-top: 20px;
+        }
+        .fileStatusItem {
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Hana's Multi-File Transfer</h1>
+    <div id="statusMessage">Waiting for connection...</div>
+    <input type="file" id="fileInput" multiple>
+    <label for="fileInput" id="selectFilesButton">Choose files</label>
+    <div id="uploadStatusContainer"></div>
+
+    <script>
+        async function getNgrokUrl() {
+            const response = await fetch('/ngrok-url');
+            const data = await response.json();
+            return data.url;
+        }
+
+        getNgrokUrl().then(ngrokUrl => {
+            const socket = io(ngrokUrl);
+            const statusMessage = document.getElementById('statusMessage');
+            const fileInput = document.getElementById('fileInput');
+            const selectFilesButton = document.getElementById('selectFilesButton');
+            const uploadStatusContainer = document.getElementById('uploadStatusContainer');
+
+            socket.on('connect', () => statusMessage.textContent = 'Connected to server');
+            socket.on('disconnect', () => statusMessage.textContent = 'Disconnected from server');
+            fileInput.addEventListener('change', (event) => {
+                const selectedFiles = event.target.files;
+                if (selectedFiles.length === 0) return;
+
+                selectFilesButton.textContent = `Uploading ${selectedFiles.length} file(s)`;
+                uploadFiles(selectedFiles);
+            });
+
+            function uploadFiles(files) {
+                let currentFileIndex = 0;
+
+                function uploadNextFile() {
+                    if (currentFileIndex >= files.length) {
+                        selectFilesButton.textContent = 'Choose files';
+                        return;
+                    }
+
+                    const file = files[currentFileIndex];
+                    const statusElement = createStatusElement(file.name);
+                    uploadFile(file, statusElement, () => {
+                        currentFileIndex++;
+                        uploadNextFile();
+                    });
+                }
+
+                uploadNextFile();
+            }
+
+            function createStatusElement(fileName) {
+                const element = document.createElement('div');
+                element.className = 'fileStatusItem';
+                element.textContent = `${fileName}: Uploading...`;
+                uploadStatusContainer.appendChild(element);
+                return element;
+            }
+
+            function uploadFile(file, statusElement, onComplete) {
+                const chunkSize = 1024 * 1024; // 1MB chunks
+                const totalChunks = Math.ceil(file.size / chunkSize);
+                let uploadedChunks = 0;
+
+                socket.emit('startUpload', file.name);
+
+                function uploadNextChunk() {
+                    const start = uploadedChunks * chunkSize;
+                    const end = Math.min(start + chunkSize, file.size);
+                    const chunk = file.slice(start, end);
+
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        socket.emit('uploadChunk', e.target.result, (response) => {
+                            if (response.message === 'success') {
+                                uploadedChunks++;
+                                if (uploadedChunks < totalChunks) {
+                                    uploadNextChunk();
+                                } else {
+                                    socket.emit('endUpload', () => {
+                                        statusElement.textContent = `${file.name}: Upload complete`;
+                                        onComplete();
+                                    });
+                                }
+                            } else {
+                                console.error('Error uploading chunk');
+                                statusElement.textContent = `${file.name}: Error uploading file`;
+                                onComplete();
+                            }
+                        });
+                    };
+                    reader.readAsArrayBuffer(chunk);
+                }
+
+                uploadNextChunk();
+            }
+        });
+    </script>
+</body>
+</html>
